@@ -230,6 +230,61 @@ def get_pivot_points(df: pd.DataFrame) -> Dict[str, float]:
     s1 = 2*pivot - high
     return {'pivot': pivot, 'r1': r1, 's1': s1}
 
+def detect_continuation_patterns(df: pd.DataFrame, base_max_candles: int = 4, body_threshold: float = 1.2) -> List[Dict[str, Any]]:
+    """Mendeteksi pola RBR (Rally-Base-Rally) dan DBD (Drop-Base-Drop)."""
+    patterns = []
+    if len(df) < base_max_candles + 2:
+        return patterns
+
+    df = df.copy()
+    df['body'] = abs(df['close'] - df['open'])
+    avg_body = df['body'].rolling(20).mean()
+
+    for i in range(len(df) - base_max_candles - 1):
+        # Cek RBR (Rally-Base-Rally)
+        rally1 = df.iloc[i]
+        is_strong_rally1 = rally1['close'] > rally1['open'] and rally1['body'] > avg_body.iloc[i] * body_threshold
+
+        if is_strong_rally1:
+            base_candles = df.iloc[i+1 : i+1+base_max_candles]
+            base_high = base_candles['high'].max()
+            base_low = base_candles['low'].min()
+
+            # Base harus berada dalam rentang rally1 dan tidak terlalu besar
+            if base_high < rally1['high'] + (rally1['body'] * 0.2) and base_low > rally1['low'] - (rally1['body'] * 0.2):
+                for j in range(1, base_max_candles + 1):
+                    rally2_idx = i + j
+                    if rally2_idx < len(df) -1:
+                        rally2 = df.iloc[rally2_idx + 1]
+                        is_strong_rally2 = rally2['close'] > rally2['open'] and rally2['body'] > avg_body.iloc[rally2_idx+1] * body_threshold
+                        if is_strong_rally2 and rally2['close'] > rally1['high']:
+                            patterns.append({'type': 'RBR', 'time': rally2['time'], 'idx': rally2_idx + 1})
+                            i = rally2_idx + 1 # Skip untuk menghindari deteksi tumpang tindih
+                            break
+
+        # Cek DBD (Drop-Base-Drop)
+        drop1 = df.iloc[i]
+        is_strong_drop1 = drop1['close'] < drop1['open'] and drop1['body'] > avg_body.iloc[i] * body_threshold
+
+        if is_strong_drop1:
+            base_candles = df.iloc[i+1 : i+1+base_max_candles]
+            base_high = base_candles['high'].max()
+            base_low = base_candles['low'].min()
+
+            # Base harus berada dalam rentang drop1
+            if base_high < drop1['high'] + (drop1['body'] * 0.2) and base_low > drop1['low'] - (drop1['body'] * 0.2):
+                for j in range(1, base_max_candles + 1):
+                    drop2_idx = i + j
+                    if drop2_idx < len(df) - 1:
+                        drop2 = df.iloc[drop2_idx + 1]
+                        is_strong_drop2 = drop2['close'] < drop2['open'] and drop2['body'] > avg_body.iloc[drop2_idx+1] * body_threshold
+                        if is_strong_drop2 and drop2['close'] < drop1['low']:
+                            patterns.append({'type': 'DBD', 'time': drop2['time'], 'idx': drop2_idx + 1})
+                            i = drop2_idx + 1 # Skip
+                            break
+
+    return patterns
+
 # ========== FEATURE EXTRACTOR ==========
 
 def extract_features_full(

@@ -18,6 +18,7 @@ from technical_indicators import (
     calculate_optimal_trade_entry,
     detect_engulfing,
     detect_pinbar,
+    detect_continuation_patterns,
 )
 from gng_model import (
     get_gng_input_features_full,
@@ -104,7 +105,7 @@ def analyze_tf_opportunity(
     order_blocks = detect_order_blocks_multi(df, structure_filter=structure_str)
     fvg_zones = detect_fvg_multi(df)
     liquidity_sweep = detect_liquidity_sweep(df)
-    patterns = detect_engulfing(df) + detect_pinbar(df)
+    patterns = detect_engulfing(df) + detect_pinbar(df) + detect_continuation_patterns(df)
     score = 0.0
     info_list: List[str] = []
     weights = {
@@ -112,6 +113,7 @@ def analyze_tf_opportunity(
         "FVG_BULLISH": 3.0, "FVG_BEARISH": -3.0, "BULLISH_LS": 3.0, "BEARISH_LS": -3.0,
         "BULLISH_OB": 1.0, "BEARISH_OB": -1.0, "GNG_Context_Buy": 1.5, "GNG_Context_Sell": -1.5,
         "ENGULFING_BULL": 1.0, "ENGULFING_BEAR": -1.0, "PINBAR_BULL": 0.8, "PINBAR_BEAR": -0.8,
+        "RBR": 2.0, "DBD": -2.0,
     }
 
     logging.info(f"[{tf}] --- Analisis Skor Dimulai ---")
@@ -155,6 +157,14 @@ def analyze_tf_opportunity(
         elif 'BEARISH' in nearest_ob['type']: ob_score = weights['BEARISH_OB'] * nearest_ob['strength']
         score += ob_score
         logging.info(f"[{tf}] OB Terdekat: {nearest_ob['type']} (Skor: {ob_score:.2f})")
+
+    pattern_score = 0
+    for p in patterns:
+        p_type = p.get('type')
+        if p_type in weights:
+            pattern_score += weights[p_type]
+            logging.info(f"[{tf}] Ditemukan Pola: {p_type} (Skor: {weights[p_type]:.2f})")
+    score += pattern_score
 
     logging.info(f"[{tf}] Total Skor Sejauh Ini: {score:.2f}")
 
