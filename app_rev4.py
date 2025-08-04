@@ -226,16 +226,26 @@ def register_page():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
-    form = LoginForm()
-    if form.validate_on_submit():
-        username = form.username.data
-        password = form.password.data
+    if request.method == 'POST':
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
+
+        if not username or not password:
+            return jsonify({"status": "error", "message": "Username dan password diperlukan"}), 400
+
         conn = get_db()
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
         if user and check_password_hash(user['password'], password):
             session['user_id'] = user['id']
-            return redirect(url_for('dashboard_page'))
-        flash('Username atau password salah', 'danger')
+            session.permanent = True # Sesi akan bertahan lebih lama
+            return jsonify({"status": "success", "redirect_url": url_for('dashboard_page')})
+
+        return jsonify({"status": "error", "message": "Username atau password salah"}), 401
+
+    # Untuk request GET, tampilkan halaman login
+    form = LoginForm()
     return render_template('login.html', form=form)
 
 @app.route('/logout')
