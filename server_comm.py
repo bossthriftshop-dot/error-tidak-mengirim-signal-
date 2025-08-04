@@ -9,25 +9,28 @@ import logging
 import requests
 from typing import Dict
 
-def send_signal_to_server(symbol: str, signal_json: Dict[str, str], api_key: str, server_url: str, secret_key: str) -> str:
+def send_signal_to_server(symbol: str, signal_json: Dict[str, str], api_key: str, server_url: str, secret_key: str, order_type: str) -> str:
     """Mengirim sinyal trading ke server dan mengembalikan status keberhasilan."""
     if not isinstance(signal_json, dict):
         logging.error("Tipe data signal_json tidak valid (harus dictionary). Sinyal tidak dikirim.")
         return 'FAILED'
 
-    # --- Logika deteksi tipe sinyal yang diperbarui ---
+    # Menentukan `signal_type` umum berdasarkan `order_type`
     signal_type = "WAIT"
-
-    if signal_json.get("DeleteLimit/Stop"):
-        signal_type = 'CANCEL'
-    elif signal_json.get("BuyEntry") or signal_json.get("BuyStop") or signal_json.get("BuyLimit"):
-        signal_type = 'BUY'
-    elif signal_json.get("SellEntry") or signal_json.get("SellStop") or signal_json.get("SellLimit"):
-        signal_type = 'SELL'
+    if "CANCEL" in order_type.upper() or "DELETE" in order_type.upper():
+        signal_type = "CANCEL"
+    elif "BUY" in order_type.upper():
+        signal_type = "BUY"
+    elif "SELL" in order_type.upper():
+        signal_type = "SELL"
 
     payload = {
-        "signal": signal_type, "signal_json": signal_json, "symbol": symbol,
-        "api_key": api_key, "secret_key": secret_key
+        "signal": signal_type,
+        "order_type": order_type,
+        "signal_json": signal_json,
+        "symbol": symbol,
+        "api_key": api_key,
+        "secret_key": secret_key
     }
 
     try:

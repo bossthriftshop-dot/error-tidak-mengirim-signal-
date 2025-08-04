@@ -32,7 +32,7 @@ from signal_generator import (
 #     get_active_trades_results,
 #     apply_learning_adjustments
 # )
-# from server_comm import send_signal_to_server, cancel_signal
+from server_comm import send_signal_to_server, cancel_signal
 
 
 # --- Konfigurasi ---
@@ -208,9 +208,14 @@ def main() -> None:
                                     continue
 
                                 logging.info("   -> Lolos. Siap dikirim!")
-                                # Placeholder untuk send_signal_to_server
-                                # send_status = send_signal_to_server(symbol, signal_json, API_KEY, SERVER_URL, SECRET_KEY)
-                                send_status = "SUCCESS" # Asumsi sukses untuk testing
+                                send_status = send_signal_to_server(
+                                    symbol=symbol,
+                                    signal_json=signal_json,
+                                    api_key=API_KEY,
+                                    server_url=SERVER_URL,
+                                    secret_key=SECRET_KEY,
+                                    order_type=order_type_to_use
+                                )
                                 if send_status == 'SUCCESS' or send_status == 'REJECTED':
                                     if send_status == 'SUCCESS':
                                         active_signals[symbol][sig_id] = {'signal_json': signal_json, 'tf': tf, 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'info': opp['info'], 'status': 'pending'}
