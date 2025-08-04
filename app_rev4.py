@@ -19,6 +19,7 @@ from dateutil.relativedelta import relativedelta
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(24)
+app.config['SECRET_KEY'] = app.secret_key # Fix for 500 error on login form
 DATABASE_FILE = 'users.db'
 UPLOAD_FOLDER = 'static/bukti_pembayaran'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf'}
@@ -468,7 +469,7 @@ def admin_activate_license(user_id):
 def download_ea():
     if 'user_id' not in session: return redirect(url_for('login_page'))
     conn = get_db()
-    user_info = conn.execute("SELECT status, end_date FROM users WHERE id = ?", (session['user_id'],)).fetchone()
+    user_info = conn.execute("SELECT status, end_date, api_key FROM users WHERE id = ?", (session['user_id'],)).fetchone()
     if not user_info or not is_api_key_valid(user_info['api_key']):
         flash("Lisensi Anda tidak aktif. Silakan perpanjang lisensi untuk men-download.", 'warning')
         return redirect(url_for('dashboard_page'))
