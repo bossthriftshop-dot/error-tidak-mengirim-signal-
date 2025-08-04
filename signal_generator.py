@@ -56,11 +56,12 @@ def is_far_enough(entry_price: float, existing_prices: List[float], point_value:
 
 def build_signal_format(symbol: str, entry_price: float, direction: str, sl: float, tp: float, order_type: str) -> dict:
     signal = {"Symbol": symbol}
-    # Disesuaikan dengan case-sensitivity dari MQL
+    # Disesuaikan dengan case-sensitivity dari MQL dan tambahkan kunci yang hilang
     order_keys = [
         "BuyEntry", "BuySL", "BuyTP", "SellEntry", "SellSL", "SellTP",
         "BuyStop", "BuyStopSL", "BuyStopTP", "SellStop", "SellStopSL", "SellStopTP",
-        "Buylimit", "BuylimitSL", "BuylimitTP", "Selllimit", "SelllimitSL", "SellLimitTP"
+        "Buylimit", "BuylimitSL", "BuylimitTP", "Selllimit", "SelllimitSL", "SellLimitTP",
+        "DeleteLimit/Stop"
     ]
     for key in order_keys:
         signal[key] = ""
