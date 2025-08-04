@@ -56,10 +56,11 @@ def is_far_enough(entry_price: float, existing_prices: List[float], point_value:
 
 def build_signal_format(symbol: str, entry_price: float, direction: str, sl: float, tp: float, order_type: str) -> dict:
     signal = {"Symbol": symbol}
+    # Disesuaikan dengan case-sensitivity dari MQL
     order_keys = [
         "BuyEntry", "BuySL", "BuyTP", "SellEntry", "SellSL", "SellTP",
         "BuyStop", "BuyStopSL", "BuyStopTP", "SellStop", "SellStopSL", "SellStopTP",
-        "BuyLimit", "BuyLimitSL", "BuyLimitTP", "SellLimit", "SellLimitSL", "SellLimitTP"
+        "Buylimit", "BuylimitSL", "BuylimitTP", "Selllimit", "SelllimitSL", "SellLimitTP"
     ]
     for key in order_keys:
         signal[key] = ""
@@ -69,9 +70,9 @@ def build_signal_format(symbol: str, entry_price: float, direction: str, sl: flo
     elif order_type_upper == 'SELL':
         signal.update({"SellEntry": str(entry_price), "SellSL": str(sl), "SellTP": str(tp)})
     elif order_type_upper == 'BUY_LIMIT':
-        signal.update({"BuyLimit": str(entry_price), "BuyLimitSL": str(sl), "BuyLimitTP": str(tp)})
+        signal.update({"Buylimit": str(entry_price), "BuylimitSL": str(sl), "BuylimitTP": str(tp)})
     elif order_type_upper == 'SELL_LIMIT':
-        signal.update({"SellLimit": str(entry_price), "SellLimitSL": str(sl), "SellLimitTP": str(tp)})
+        signal.update({"Selllimit": str(entry_price), "SelllimitSL": str(sl), "SellLimitTP": str(tp)})
     elif order_type_upper == 'BUY_STOP':
         signal.update({"BuyStop": str(entry_price), "BuyStopSL": str(sl), "BuyStopTP": str(tp)})
     elif order_type_upper == 'SELL_STOP':
