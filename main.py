@@ -1,17 +1,16 @@
-# main.py
+# main.py (Refactored)
 #
 # Deskripsi:
-# Versi ini telah direfaktor untuk mendukung analisis MULTI-SYMBOL secara bersamaan.
-# Bot akan melakukan loop melalui daftar simbol yang ditentukan dan mengelola
-# model, status, dan sinyal untuk setiap simbol secara terpisah.
+# Versi ini telah direfaktor untuk menggunakan file `config.json` eksternal
+# dan memiliki struktur kode yang lebih modular dan mudah dikelola.
 
 import logging
 import os
 import time
 import numpy as np
 import xgboost as xgb
-from datetime import datetime, timedelta
-from typing import Dict, List
+from datetime import datetime
+from typing import Dict, List, Any
 import json
 
 from data_fetching import get_candlestick_data, DataCache
@@ -24,58 +23,78 @@ from signal_generator import (
     get_active_orders,
     is_far_enough
 )
-# Asumsi file-file ini ada, jika tidak ada, perlu dibuat placeholder-nya
-# from learning import (
-#     AutoLearningModule,
-#     AdaptiveGNGLearning,
-#     MarketRegimeDetector,
-#     get_active_trades_results,
-#     apply_learning_adjustments
-# )
-from server_comm import send_signal_to_server, cancel_signal
+from server_comm import send_signal_to_server
 
-
-# --- Konfigurasi ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-# --- PERUBAHAN: Dari satu simbol menjadi list (daftar) simbol ---
-SYMBOLS_TO_ANALYZE = ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD"] 
-TIMEFRAMES_LIST = ["M1", "M5", "M30", "H4"]
+# --- Global States ---
 DATA_CACHE = DataCache()
-MODEL_DIR = "gng_models"
-MT5_TERMINAL_PATH = r"C:\\Program Files\\ExclusiveMarkets MetaTrader5\\terminal64.exe"
-MAX_POSITION_PER_TF = 10
-API_KEY = "c1b086d4-a681-48df-957f-6fcc35a82f6d"
-SERVER_URL = "http://127.0.0.1:5000/api/internal/submit_signal"
-SECRET_KEY = "c1b086d4-a681-48df-957f-6fcc35a82f6d"
-MIN_DISTANCE_PIPS_PER_TF = { "M1": 5, "M5": 10, "M30": 20, "H4": 30 }
-# --- PERUBAHAN: Dibuat nested dictionary untuk menyimpan sinyal per simbol ---
-active_signals: Dict[str, Dict[str, Dict[str, any]]] = {symbol: {} for symbol in SYMBOLS_TO_ANALYZE}
-SIGNAL_COOLDOWN_MINUTES = 1
-SIGNAL_MEMORY_MINUTES = 1
-
-# --- Parameter Strategi ---
-CONFIDENCE_THRESHOLD = 2.0  
-XGBOOST_CONFIDENCE_THRESHOLD = 0.75
-
-# --- Inisialisasi Model AI ---
-# --- PERUBAHAN: Dibuat dictionary untuk menyimpan model AI per simbol ---
-xgb_models: Dict[str, xgb.XGBClassifier] = {}
-for symbol in SYMBOLS_TO_ANALYZE:
-    try:
-        model_path = f"xgboost_model_{symbol}.json"
-        logging.info(f"Mencoba memuat model AI untuk {symbol} dari '{model_path}'...")
-        model = xgb.XGBClassifier()
-        model.load_model(model_path)
-        xgb_models[symbol] = model
-        logging.info(f"Model AI untuk {symbol} berhasil dimuat.")
-    except Exception as e:
-        logging.error(f"GAGAL memuat model AI untuk {symbol}: {e}. Simbol ini akan berjalan TANPA konfirmasi AI.")
-        xgb_models[symbol] = None
-
-# --- PERUBAHAN: Dibuat dictionary untuk menyimpan status cooldown per simbol ---
+# active_signals dan signal_cooldown akan diinisialisasi di main()
+active_signals: Dict[str, Dict[str, Dict[str, any]]] = {}
 signal_cooldown: Dict[str, datetime] = {}
 
+def load_config(filepath: str = "config.json") -> Dict[str, Any]:
+    """Memuat konfigurasi dari file JSON."""
+    try:
+        with open(filepath, 'r') as f:
+            config = json.load(f)
+        logging.basicConfig(
+            level=getattr(logging, config['logging']['level'].upper(), logging.INFO),
+            format=config['logging']['format']
+        )
+        logging.info("Konfigurasi berhasil dimuat dari %s", filepath)
+        return config
+    except FileNotFoundError:
+        logging.critical("File konfigurasi '%s' tidak ditemukan. Bot tidak bisa berjalan.", filepath)
+        exit()
+    except json.JSONDecodeError:
+        logging.critical("File konfigurasi '%s' tidak valid. Periksa format JSON.", filepath)
+        exit()
+    except Exception as e:
+        logging.critical("Error saat memuat konfigurasi: %s", e)
+        exit()
+
+def initialize_models(config: Dict[str, Any]) -> tuple[dict, dict, dict]:
+    """Inisialisasi semua model (GNG, XGBoost) untuk semua simbol."""
+    gng_models = {}
+    gng_feature_stats = {}
+    xgb_models = {}
+
+    symbols = config['symbols_to_analyze']
+    timeframes = config['timeframes_list']
+    model_dir = config.get('model_dir', 'gng_models')
+    mt5_path = config['mt5_terminal_path']
+
+    logging.info("--- Inisialisasi Model GNG ---")
+    for symbol in symbols:
+        try:
+            models, stats = initialize_gng_models(
+                symbol=symbol, timeframes=timeframes, model_dir=model_dir,
+                mt5_path=mt5_path, get_data_func=get_candlestick_data
+            )
+            gng_models[symbol] = models
+            gng_feature_stats[symbol] = stats
+            logging.info("Model GNG untuk %s berhasil diinisialisasi.", symbol)
+        except Exception as e:
+            logging.error("Gagal inisialisasi model GNG untuk %s: %s", symbol, e)
+            gng_models[symbol] = {}
+            gng_feature_stats[symbol] = {}
+
+    logging.info("--- Inisialisasi Model AI (XGBoost) ---")
+    for symbol in symbols:
+        try:
+            model_path = f"xgboost_model_{symbol}.json"
+            logging.info("Mencoba memuat model AI untuk %s dari '%s'...", symbol, model_path)
+            model = xgb.XGBClassifier()
+            model.load_model(model_path)
+            xgb_models[symbol] = model
+            logging.info("Model AI untuk %s berhasil dimuat.", symbol)
+        except Exception as e:
+            logging.error("GAGAL memuat model AI untuk %s: %s. Simbol ini akan berjalan TANPA konfirmasi AI.", symbol, e)
+            xgb_models[symbol] = None
+
+    return gng_models, gng_feature_stats, xgb_models
+
 def get_recent_signals_from_memory(signals_for_symbol: Dict[str, Dict[str, any]], minutes: int) -> List[float]:
+    """Membersihkan sinyal lama dari memori dan mengembalikan harga entry dari sinyal baru."""
     recent_prices = []
     now = datetime.now()
     signals_to_clear = []
@@ -89,40 +108,155 @@ def get_recent_signals_from_memory(signals_for_symbol: Dict[str, Dict[str, any]]
                 original_signal = signal_data['signal_json']
                 entry_val_str = (original_signal.get("BuyEntry") or original_signal.get("SellEntry") or
                                  original_signal.get("BuyStop") or original_signal.get("SellStop") or
-                                 original_signal.get("BuyLimit") or original_signal.get("SellLimit"))
+                                 original_signal.get("Buylimit") or original_signal.get("Selllimit"))
                 if entry_val_str:
                     recent_prices.append(float(entry_val_str))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as e:
+            logging.warning("Error memproses sinyal memori (ID: %s): %s. Sinyal akan dihapus.", sig_id, e)
             signals_to_clear.append(sig_id)
 
     if signals_to_clear:
-        logging.info(f"Membersihkan {len(signals_to_clear)} sinyal lama dari memori (lebih dari {minutes} menit).")
+        logging.info("Membersihkan %d sinyal lama dari memori (lebih dari %d menit).", len(signals_to_clear), minutes)
         for sig_id in signals_to_clear:
             if sig_id in signals_for_symbol:
                 del signals_for_symbol[sig_id]
 
     return recent_prices
 
-def main() -> None:
-    # --- PERUBAHAN: Inisialisasi model untuk semua simbol ---
-    gng_models = {}
-    gng_feature_stats = {}
-    for symbol in SYMBOLS_TO_ANALYZE:
-        models, stats = initialize_gng_models(
-            symbol=symbol, timeframes=TIMEFRAMES_LIST, model_dir=MODEL_DIR,
-            mt5_path=MT5_TERMINAL_PATH, get_data_func=get_candlestick_data
-        )
-        gng_models[symbol] = models
-        gng_feature_stats[symbol] = stats
+def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[str, Any], xgb_model: xgb.XGBClassifier):
+    """Memproses, memvalidasi, dan mengirim sinyal jika ada peluang yang memenuhi syarat."""
+    global active_signals, signal_cooldown
 
-    # auto_learners = {s: {tf: AutoLearningModule(s, tf) for tf in TIMEFRAMES_LIST} for s in SYMBOLS_TO_ANALYZE}
-    # adaptive_gng = {s: {tf: AdaptiveGNGLearning(gng_models[s].get(tf)) for tf in TIMEFRAMES_LIST if gng_models[s].get(tf)} for s in SYMBOLS_TO_ANALYZE}
-    # regime_detector = MarketRegimeDetector()
+    strategy_params = config['strategy_params']
+    confidence_threshold = strategy_params['confidence_threshold']
+
+    if abs(opp['score']) < confidence_threshold:
+        logging.info("⏳ [%s | %s] SINYAL WAIT. Skor (%.2f) di bawah threshold (%.1f).", symbol, tf, opp['score'], confidence_threshold)
+        return False
+
+    logging.info("✅ [%s | %s] SINYAL ENTRY! Peluang %s memenuhi syarat. Skor: %.2f (Min: %.1f).", symbol, tf, opp['signal'], opp['score'], confidence_threshold)
+
+    # --- Validasi AI ---
+    if xgb_model and opp.get('features') is not None and opp['features'].size > 0:
+        features = np.array(opp['features']).reshape(1, -1)
+        win_probability = xgb_model.predict_proba(features)[0][1]
+        logging.info("[%s | %s] Meminta pendapat AI... Prediksi: %.2f%% kemungkinan WIN.", symbol, tf, win_probability * 100)
+        if win_probability < strategy_params['xgboost_confidence_threshold']:
+            logging.warning("[%s | %s] AI menyarankan tidak mengambil ini (Probabilitas %.2f%% < Threshold %.2f%%). Peluang dilewati.", symbol, tf, win_probability * 100, strategy_params['xgboost_confidence_threshold'] * 100)
+            return False
+        logging.info("[%s | %s] Lampu hijau dari AI! Melanjutkan.", symbol, tf)
+
+    # --- Pemeriksaan Keamanan ---
+    open_pos_count = get_open_positions_per_tf(symbol, tf, config['mt5_terminal_path'])
+    logging.info("[%s | %s] Pemeriksaan 1/3: Batas posisi. Terbuka: %d (Maks: %d).", symbol, tf, open_pos_count, config['max_position_per_tf'])
+    if open_pos_count >= config['max_position_per_tf']:
+        logging.warning("   -> Gagal. Batas posisi terbuka tercapai.")
+        return False
+    logging.info("   -> Lolos.")
+
+    mt5_orders = get_active_orders(symbol, config['mt5_terminal_path'])
+    recent_signals = get_recent_signals_from_memory(active_signals[symbol], config['signal_memory_minutes'])
+    all_known_orders = list(dict.fromkeys(mt5_orders + recent_signals))
+    entry_price = float(opp['entry_price_chosen'])
+
+    logging.info("[%s | %s] Pemeriksaan 2/3: Jarak entry. Entry di %.5f vs order lain.", symbol, tf, entry_price)
+    if not is_far_enough(entry_price, all_known_orders, 0.1, config['min_distance_pips_per_tf'].get(tf, 10)):
+        logging.warning("   -> Gagal. Terlalu dekat dengan order lain.")
+        return False
+    logging.info("   -> Lolos.")
+
+    # --- Persiapan & Pengiriman Sinyal ---
+    order_type_to_use = opp.get('order_type', opp['signal'])
+    signal_json = build_signal_format(
+        symbol=symbol, entry_price=entry_price, direction=opp['signal'],
+        sl=float(opp['sl']), tp=float(opp['tp']), order_type=order_type_to_use
+    )
+    sig_id = make_signal_id(signal_json)
+
+    logging.info("[%s | %s] Pemeriksaan 3/3: Duplikasi. Sinyal ID: %s.", symbol, tf, sig_id)
+    if sig_id in active_signals[symbol]:
+        logging.warning("   -> Gagal. Sinyal ini duplikat dari yang baru saja dikirim.")
+        return False
+    logging.info("   -> Lolos. Siap dikirim!")
+
+    send_status = send_signal_to_server(
+        symbol=symbol, signal_json=signal_json, api_key=config['api_key'],
+        server_url=config['server_url'], secret_key=config['secret_key'],
+        order_type=order_type_to_use
+    )
+
+    if send_status == 'SUCCESS':
+        active_signals[symbol][sig_id] = {'signal_json': signal_json, 'tf': tf, 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'info': opp['info'], 'status': 'pending'}
+        logging.info("[%s | %s] Sinyal berhasil dikirim!", symbol, tf)
+        signal_cooldown[symbol] = datetime.now()
+        logging.info("[%s] Cooldown %d menit diaktifkan.", symbol, config['signal_cooldown_minutes'])
+        return True # Sinyal berhasil dikirim
+    elif send_status == 'REJECTED':
+        logging.warning("[%s | %s] Server menolak sinyal (kemungkinan duplikat atau filter server).", symbol, tf)
+    else: # FAILED
+        logging.error("[%s | %s] Pengiriman GAGAL karena error koneksi.", symbol, tf)
+
+    return False
+
+def process_symbol(symbol: str, config: Dict[str, Any], models: Dict[str, Any]):
+    """Menjalankan seluruh siklus analisis untuk satu simbol."""
+    global signal_cooldown
+
+    # --- Pengecekan Cooldown ---
+    cooldown_minutes = config['signal_cooldown_minutes']
+    if symbol in signal_cooldown:
+        time_since_signal = (datetime.now() - signal_cooldown[symbol]).total_seconds() / 60
+        if time_since_signal < cooldown_minutes:
+            logging.info("[%s] Sabar dulu... Masih dalam masa tenang. Sisa: %.1f menit.", symbol, cooldown_minutes - time_since_signal)
+            return
+        else:
+            logging.info("[%s] Masa tenang selesai.", symbol)
+            del signal_cooldown[symbol]
+
+    logging.info("--- Menganalisis Simbol: %s ---", symbol)
+
+    # --- Loop Analisis per Timeframe ---
+    for tf in config['timeframes_list']:
+        logging.info("[%s | %s] Menganalisis timeframe...", symbol, tf)
+
+        try:
+            opp = analyze_tf_opportunity(
+                symbol=symbol, tf=tf, mt5_path=config['mt5_terminal_path'],
+                gng_model=models['gng'].get(symbol, {}).get(tf),
+                gng_feature_stats=models['gng_stats'].get(symbol, {}),
+                confidence_threshold=0.0, # Kirim 0.0 agar semua dianalisis, filter di handle_opportunity
+                min_distance_pips_per_tf=config['min_distance_pips_per_tf'],
+                htf_bias=None
+            )
+
+            if opp and opp.get('signal') != "WAIT":
+                signal_sent = handle_opportunity(opp, symbol, tf, config, models['xgb'].get(symbol))
+                if signal_sent:
+                    break # Hentikan loop timeframe untuk simbol ini karena sinyal sudah dikirim
+        except Exception as e:
+            logging.error("Error saat menganalisis %s | %s: %s", symbol, tf, e, exc_info=True)
+
+
+def main():
+    """Fungsi utama untuk menjalankan bot."""
+    global active_signals, signal_cooldown
+
+    config = load_config()
+    symbols_to_analyze = config['symbols_to_analyze']
+
+    # Inisialisasi state global berdasarkan config
+    active_signals = {symbol: {} for symbol in symbols_to_analyze}
+    signal_cooldown = {}
+
+    gng_models, gng_stats, xgb_models = initialize_models(config)
+    all_models = {'gng': gng_models, 'gng_stats': gng_stats, 'xgb': xgb_models}
 
     logging.info("="*50)
-    logging.info("Bot Trading AI v2.2 (Mode Scalping Multi-Symbol) Siap Beraksi!")
-    logging.info(f"Simbol dianalisis: {', '.join(SYMBOLS_TO_ANALYZE)}")
-    logging.info(f"Threshold Aturan: {CONFIDENCE_THRESHOLD} | Threshold AI: {XGBOOST_CONFIDENCE_THRESHOLD:.0%}")
+    logging.info("Bot Trading AI v3.0 (Refactored) Siap Beraksi!")
+    logging.info("Simbol dianalisis: %s", ', '.join(symbols_to_analyze))
+    logging.info("Threshold Aturan: %.1f | Threshold AI: %.0f%%",
+                 config['strategy_params']['confidence_threshold'],
+                 config['strategy_params']['xgboost_confidence_threshold'] * 100)
     logging.info("="*50)
 
     try:
@@ -130,121 +264,18 @@ def main() -> None:
             logging.info("-" * 50)
             logging.info("Memulai siklus analisis baru untuk semua simbol...")
             
-            # --- PERUBAHAN: Loop utama sekarang melalui setiap simbol ---
-            for symbol in SYMBOLS_TO_ANALYZE:
-                try:
-                    # --- Logika Cooldown per Simbol ---
-                    if symbol in signal_cooldown:
-                        time_since_signal = (datetime.now() - signal_cooldown[symbol]).total_seconds() / 60
-                        if time_since_signal < SIGNAL_COOLDOWN_MINUTES:
-                            logging.info(f"[{symbol}] Sabar dulu... Masih dalam masa tenang. Sisa: {SIGNAL_COOLDOWN_MINUTES - time_since_signal:.1f} menit.")
-                            continue
-                        else:
-                            logging.info(f"[{symbol}] Masa tenang selesai.")
-                            del signal_cooldown[symbol]
+            for symbol in symbols_to_analyze:
+                process_symbol(symbol, config, all_models)
 
-                    logging.info(f"--- Menganalisis Simbol: {symbol} ---")
-
-                    # --- Loop Analisis per Timeframe ---
-                    for tf in TIMEFRAMES_LIST:
-                        logging.info(f"[{symbol} | {tf}] Menganalisis timeframe...")
-                        
-                        symbol_gng_models = gng_models.get(symbol, {})
-                        symbol_gng_stats = gng_feature_stats.get(symbol, {})
-
-                        opp = analyze_tf_opportunity(
-                            symbol=symbol, tf=tf, mt5_path=MT5_TERMINAL_PATH,
-                            gng_model=symbol_gng_models.get(tf), gng_feature_stats=symbol_gng_stats,
-                            confidence_threshold=0.0,
-                            min_distance_pips_per_tf=MIN_DISTANCE_PIPS_PER_TF, htf_bias=None
-                        )
-
-                        if opp and opp.get('score') is not None and opp.get('signal') != "WAIT":
-                            if abs(opp['score']) >= CONFIDENCE_THRESHOLD:
-                                logging.info(f"✅ [{symbol} | {tf}] SINYAL ENTRY! Peluang {opp['signal']} memenuhi syarat. Skor: {opp['score']:.2f} (Min: {CONFIDENCE_THRESHOLD}).")
-                                
-                                # --- Validasi AI per Simbol ---
-                                xgb_model = xgb_models.get(symbol)
-                                if xgb_model and opp.get('features') is not None and opp['features'].size > 0:
-                                    features = np.array(opp['features']).reshape(1, -1)
-                                    win_probability = xgb_model.predict_proba(features)[0][1]
-                                    logging.info(f"[{symbol} | {tf}] Meminta pendapat AI... Prediksi: {win_probability:.2%} kemungkinan WIN.")
-                                    if win_probability < XGBOOST_CONFIDENCE_THRESHOLD:
-                                        logging.warning(f"[{symbol} | {tf}] AI menyarankan tidak mengambil ini. Peluang dilewati.")
-                                        continue
-                                    logging.info(f"[{symbol} | {tf}] Lampu hijau dari AI! Melanjutkan.")
-
-                                # --- Pemeriksaan Keamanan per Simbol ---
-                                open_pos_count = get_open_positions_per_tf(symbol, tf, MT5_TERMINAL_PATH)
-                                logging.info(f"[{symbol} | {tf}] Pemeriksaan 1/3: Batas posisi. Terbuka: {open_pos_count} (Maks: {MAX_POSITION_PER_TF}).")
-                                if open_pos_count >= MAX_POSITION_PER_TF:
-                                    logging.warning(f"   -> Gagal. Batas posisi terbuka tercapai.")
-                                    continue
-                                
-                                logging.info("   -> Lolos.")
-                                mt5_orders = get_active_orders(symbol, MT5_TERMINAL_PATH)
-                                recent_signals = get_recent_signals_from_memory(active_signals[symbol], minutes=SIGNAL_MEMORY_MINUTES)
-                                all_known_orders = list(dict.fromkeys(mt5_orders + recent_signals))
-                                entry_price = float(opp['entry_price_chosen'])
-                                point_value = 0.1
-                                logging.info(f"[{symbol} | {tf}] Pemeriksaan 2/3: Jarak entry. Entry di {entry_price} vs order lain.")
-                                if not is_far_enough(entry_price, all_known_orders, point_value, MIN_DISTANCE_PIPS_PER_TF.get(tf, 10)):
-                                    logging.warning("   -> Gagal. Terlalu dekat dengan order lain.")
-                                    continue
-
-                                logging.info("   -> Lolos.")
-
-                                # --- Persiapan & Pengiriman Sinyal ---
-                                order_type_to_use = opp.get('order_type', opp['signal'])
-                                signal_json = build_signal_format(
-                                    symbol=symbol, entry_price=entry_price, direction=opp['signal'],
-                                    sl=float(opp['sl']), tp=float(opp['tp']), order_type=order_type_to_use
-                                )
-                                sig_id = make_signal_id(signal_json)
-
-                                logging.info(f"[{symbol} | {tf}] Pemeriksaan 3/3: Duplikasi. Sinyal ID: {sig_id}.")
-                                if sig_id in active_signals[symbol]:
-                                    logging.warning("   -> Gagal. Sinyal ini duplikat dari yang baru saja dikirim.")
-                                    continue
-
-                                logging.info("   -> Lolos. Siap dikirim!")
-                                send_status = send_signal_to_server(
-                                    symbol=symbol,
-                                    signal_json=signal_json,
-                                    api_key=API_KEY,
-                                    server_url=SERVER_URL,
-                                    secret_key=SECRET_KEY,
-                                    order_type=order_type_to_use
-                                )
-                                if send_status == 'SUCCESS' or send_status == 'REJECTED':
-                                    if send_status == 'SUCCESS':
-                                        active_signals[symbol][sig_id] = {'signal_json': signal_json, 'tf': tf, 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'info': opp['info'], 'status': 'pending'}
-                                        logging.info(f"[{symbol} | {tf}] Sinyal berhasil dikirim!")
-                                    else:
-                                        logging.warning(f"[{symbol} | {tf}] Server menolak sinyal (kemungkinan duplikat).")
-                                    signal_cooldown[symbol] = datetime.now()
-                                    logging.info(f"[{symbol}] Cooldown {SIGNAL_COOLDOWN_MINUTES} menit diaktifkan.")
-                                    break # Hentikan loop timeframe karena sinyal berhasil dikirim
-                                else:
-                                    logging.error(f"[{symbol} | {tf}] Pengiriman GAGAL karena error koneksi.")
-                            else:
-                                logging.info(f"⏳ [{symbol} | {tf}] SINYAL WAIT. Skor ({opp['score']:.2f}) di bawah threshold ({CONFIDENCE_THRESHOLD}).")
-                
-                except Exception as e:
-                    logging.critical(f"Terjadi error kritis saat menganalisis simbol {symbol}: {e}", exc_info=True)
-            
-            logging.info(f"Semua simbol telah dianalisis. Istirahat 20 detik...")
-            time.sleep(20)
+            sleep_duration = config.get('main_loop_sleep_seconds', 20)
+            logging.info("Semua simbol telah dianalisis. Istirahat %d detik...", sleep_duration)
+            time.sleep(sleep_duration)
 
     except KeyboardInterrupt:
-        logging.info("Perintah berhenti diterima. Menyimpan data jika ada...")
-        # for symbol_learners in auto_learners.values():
-        #     for learner in symbol_learners.values():
-        #         learner.save_history()
-        logging.info("Semua data berhasil disimpan. Sampai jumpa!")
+        logging.info("Perintah berhenti diterima. Bot akan dimatikan.")
+    finally:
+        logging.info("Aplikasi Selesai.")
+
 
 if __name__ == '__main__':
-    # Karena saya tidak punya file learning & server_comm, saya comment out bagian yang relevan
-    # agar script bisa di-parse. Anda bisa uncomment di environment Anda.
-    # Untuk menjalankan, pastikan semua file (data_fetching, gng_model, signal_generator) ada.
     main()

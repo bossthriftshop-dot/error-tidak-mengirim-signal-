@@ -1,0 +1,26 @@
+{
+    "symbols_to_analyze": ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD"],
+    "timeframes_list": ["M1", "M5", "M30", "H4"],
+    "mt5_terminal_path": "C:\\\\Program Files\\\\ExclusiveMarkets MetaTrader5\\\\terminal64.exe",
+    "max_position_per_tf": 10,
+    "api_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+    "server_url": "http://127.0.0.1:5000/api/internal/submit_signal",
+    "secret_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+    "min_distance_pips_per_tf": {
+        "M1": 5,
+        "M5": 10,
+        "M30": 20,
+        "H4": 30
+    },
+    "signal_cooldown_minutes": 1,
+    "signal_memory_minutes": 1,
+    "strategy_params": {
+        "confidence_threshold": 2.0,
+        "xgboost_confidence_threshold": 0.75
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(levelname)s - %(message)s"
+    },
+    "main_loop_sleep_seconds": 20
+}
