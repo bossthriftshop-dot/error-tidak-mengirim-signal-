@@ -8,6 +8,7 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, session, redirect, url_for, send_from_directory, flash, g
+from flask_socketio import SocketIO
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import secrets
@@ -20,6 +21,7 @@ from dateutil.relativedelta import relativedelta
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(24)
 app.config['SECRET_KEY'] = app.secret_key # Fix for 500 error on login form
+socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 DATABASE_FILE = 'users.db'
 UPLOAD_FOLDER = 'static/bukti_pembayaran'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf'}
@@ -29,6 +31,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(threadName)s - %
 
 INTERNAL_SECRET_KEY = "c1b086d4-a681-48df-957f-6fcc35a82f6d"
 last_signal_info = {}
+signal_context_cache = {} # Cache untuk menyimpan konteks sinyal untuk pembelajaran
 SYMBOL_ALIAS_MAP = {
     'XAUUSD': 'XAUUSD', 'XAUUSDc': 'XAUUSD', 'XAUUSDm': 'XAUUSD', 'GOLD': 'XAUUSD',
     'BTCUSD': 'BTCUSD', 'BTCUSDc': 'BTCUSD', 'BTCUSDm': 'BTCUSD',
@@ -54,7 +57,7 @@ def is_too_close_to_open_position(new_entry, open_positions, pip_threshold=100.0
     """
     now = datetime.now()
     recent_positions = []
-    
+
     # Filter untuk hanya mengambil posisi yang masih relevan
     for pos in open_positions:
         try:
@@ -74,7 +77,7 @@ def is_too_close_to_open_position(new_entry, open_positions, pip_threshold=100.0
                 return True
         except (ValueError, TypeError):
             continue
-            
+
     return False
 # ====================================================================
 
@@ -182,7 +185,7 @@ def is_api_key_valid(api_key):
 @app.before_request
 def require_login():
     public_routes = [
-        'login_page', 'register_page', 'get_signal', 'admin_login', 'static', 
+        'login_page', 'register_page', 'get_signal', 'admin_login', 'static',
         'status_page', 'receive_signal', 'feedback_trade', 'index', 'home_page', 'panduan_page'
     ]
     if request.path.startswith('/admin') and 'admin_id' in session:
@@ -318,7 +321,7 @@ def get_signal():
     api_key = request.args.get('key')
     if not api_key or not is_api_key_valid(api_key):
         return jsonify({"error": "Unauthorized. Invalid or expired API Key."}), 401
-    
+
     symbol = request.args.get('symbol', 'XAUUSD').upper()
     mapped_symbol = SYMBOL_ALIAS_MAP.get(symbol, 'XAUUSD')
     signal_data_key = f"{api_key}_{mapped_symbol}"
@@ -328,60 +331,70 @@ def get_signal():
         response_data = signal_data['signal_json']
         response_data.update({"signal_id": signal_data['signal_id'], "order_type": signal_data['order_type']})
         return jsonify(response_data)
-    
+
     return jsonify({"order_type": "WAIT"})
 
 @app.route('/api/internal/submit_signal', methods=['POST'])
 def receive_signal():
-    global last_signal_info, open_positions_map
+    global last_signal_info, open_positions_map, signal_context_cache
     data = request.json
     if not data: return jsonify({"error": "No data received"}), 400
 
     api_key = data.get('api_key', INTERNAL_SECRET_KEY)
     symbol = data.get('symbol', 'XAUUSD').upper()
     mapped_symbol = SYMBOL_ALIAS_MAP.get(symbol, 'XAUUSD')
-    signal_type = data.get('signal') # 'BUY' or 'SELL'
-    order_type = data.get('order_type', signal_type) # 'BUY_LIMIT', 'SELL_STOP', etc.
+    signal_type = data.get('signal')
+    order_type = data.get('order_type', signal_type)
     signal_json = data.get('signal_json', {})
-    
-    # --- PERBAIKAN: Ekstrak entry price dari semua jenis order ---
+    score = data.get('score')
+    info = data.get('info')
+    profile_name = data.get('profile_name') # Ambil nama profil
+
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    signal_id = generate_signal_id(api_key, order_type, timestamp)
+
+    # Simpan konteks untuk pembelajaran nanti, sekarang termasuk profil
+    signal_context_cache[signal_id] = {
+        "score": score,
+        "info": info,
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "order_type": order_type,
+        "profile_name": profile_name
+    }
+
     entry_price = None
     if signal_type == 'BUY':
-        # Cari nilai entry yang valid (bukan string kosong)
-        entry_price = signal_json.get('BuyEntry') or signal_json.get('BuyStop') or signal_json.get('BuyLimit')
+        entry_price = signal_json.get('BuyEntry') or signal_json.get('BuyStop') or signal_json.get('Buylimit')
     elif signal_type == 'SELL':
-        entry_price = signal_json.get('SellEntry') or signal_json.get('SellStop') or signal_json.get('SellLimit')
+        entry_price = signal_json.get('SellEntry') or signal_json.get('SellStop') or signal_json.get('Selllimit')
 
-    # Pastikan entry_price bukan string kosong sebelum melanjutkan
-    if not entry_price: # Ini akan menangani None dan ""
+    if not entry_price:
         entry_price = None
 
-    # Hanya lakukan pemeriksaan jika entry_price berhasil ditemukan
     if entry_price is not None:
         pip_threshold = 100.0
         open_positions = get_open_positions(api_key, mapped_symbol)
-        
+
         if is_too_close_to_open_position(entry_price, open_positions, pip_threshold):
-            logging.warning(f"Sinyal ditolak oleh server: Entry {entry_price} terlalu dekat dengan posisi 'hantu' yang masih diingat.")
-            return jsonify({"error": f"Entry {entry_price} terlalu dekat dengan posisi aktif (pips < {pip_threshold}), sinyal di-skip"}), 409
+            logging.warning(f"Sinyal ditolak oleh server: Entry {entry_price} terlalu dekat dengan posisi aktif (pips < {pip_threshold}), sinyal di-skip")
+            return jsonify({"error": f"Entry {entry_price} terlalu dekat dengan posisi aktif, sinyal di-skip"}), 409
 
         key = f"{api_key}_{mapped_symbol}"
         pos = {"entry": float(entry_price), "type": signal_type, "time": datetime.now().isoformat()}
         with open_positions_lock:
             if key not in open_positions_map: open_positions_map[key] = []
             now = datetime.now()
-            # Hapus posisi "hantu" yang sudah tua
             open_positions_map[key] = [p for p in open_positions_map.get(key, []) if (now - datetime.fromisoformat(p['time'])) < timedelta(hours=8)]
             open_positions_map[key].append(pos)
 
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     signal_payload = {
-        'signal_id': generate_signal_id(api_key, order_type, timestamp),
-        'order_type': order_type,  # --- PERBAIKAN: Gunakan order_type spesifik
+        'signal_id': signal_id, # Gunakan signal_id yang sudah dibuat
+        'order_type': order_type,
         'timestamp': timestamp,
         'signal_json': signal_json
     }
-    
+
     conn = get_db()
     all_api_keys = [row['api_key'] for row in conn.execute("SELECT api_key FROM users WHERE status IN ('active','trial')").fetchall()]
     for user_api_key in all_api_keys:
@@ -395,18 +408,25 @@ def receive_signal():
 def feedback_trade():
     data = request.json
     if not data: return jsonify({"status": "error", "message": "No data received"}), 400
-    
+
+    # Ambil konteks dari cache
+    signal_id = data.get('signal_id')
+    context = signal_context_cache.pop(signal_id, {}) # Ambil dan hapus dari cache
+
+    # Gabungkan data feedback dengan konteks
+    full_feedback = {**context, **data}
+
     feedback_path = "trade_feedback.json"
     with feedback_file_lock:
         try:
             with open(feedback_path, "r+") as f:
                 current_data = json.load(f)
-                current_data.append(data)
+                current_data.append(full_feedback)
                 f.seek(0)
                 json.dump(current_data, f, indent=2)
         except (FileNotFoundError, json.JSONDecodeError):
             with open(feedback_path, "w") as f:
-                json.dump([data], f, indent=2)
+                json.dump([full_feedback], f, indent=2)
     return jsonify({"status": "success"}), 200
 
 # === ADMIN ENDPOINTS ===
@@ -459,7 +479,7 @@ def admin_activate_license(user_id):
     new_start_date = user_info['start_date'] if current_end_date > datetime.now().date() else datetime.now().date().isoformat()
 
     conn.execute("""
-        UPDATE users SET start_date = ?, end_date = ?, status = 'active', 
+        UPDATE users SET start_date = ?, end_date = ?, status = 'active',
         proof_filename = NULL, duration_pending = NULL WHERE id = ?
     """, (new_start_date, new_end_date.isoformat(), user_id))
     conn.commit()
@@ -478,10 +498,31 @@ def download_ea():
     ea_filename = 'Esteh AI Update.zip'
     return send_from_directory(directory=ea_directory, path=ea_filename, as_attachment=True)
 
+# === SOCKET.IO EVENTS ===
+@socketio.on('connect')
+def handle_connect():
+    """Event handler for new client connections."""
+    logging.info(f"Browser client terhubung: {request.sid}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Event handler for client disconnections."""
+    logging.info(f"Browser client terputus: {request.sid}")
+
+@socketio.on('submit_log')
+def handle_submit_log(data):
+    """
+    Event handler for receiving logs from the bot script client.
+    It then broadcasts the log to all connected browser clients.
+    """
+    # 'new_log' is the event that the browser clients will listen for.
+    socketio.emit('new_log', {'message': data.get('message', '')})
+
 # ========== INIT & RUN ==========
 if __name__ == '__main__':
     os.makedirs(os.path.join(app.root_path, 'static'), exist_ok=True)
     os.makedirs(os.path.join(app.root_path, app.config['UPLOAD_FOLDER']), exist_ok=True)
     with app.app_context():
         init_db_data()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # app.run(host='0.0.0.0', port=5000, debug=False) # Old way
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False) # New way with SocketIO

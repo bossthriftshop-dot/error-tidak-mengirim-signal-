@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import json
 from typing import Dict, List, Tuple, Optional, Any
+from collections import Counter
 
 import MetaTrader5 as mt5
 
@@ -92,8 +93,13 @@ def analyze_tf_opportunity(
     gng_feature_stats: Dict[str, Dict[str, Any]],
     confidence_threshold: float,
     min_distance_pips_per_tf: Dict[str, float],
-    htf_bias: Optional[str] = None
+    weights: Dict[str, float],
+    htf_bias: str = 'NEUTRAL',
+    htf_config: Dict[str, Any] = None
 ) -> Optional[Dict[str, Any]]:
+    if htf_config is None:
+        htf_config = {}
+
     df = get_candlestick_data(symbol, tf, 200, mt5_path)
     if df is None or len(df) < 50:
         logging.warning(f"Data TF {tf} tidak cukup untuk analisis.")
@@ -108,13 +114,6 @@ def analyze_tf_opportunity(
     patterns = detect_engulfing(df) + detect_pinbar(df) + detect_continuation_patterns(df)
     score = 0.0
     info_list: List[str] = []
-    weights = {
-        "BULLISH_BOS": 3.0, "BEARISH_BOS": -3.0, "HH": 1.0, "LL": -1.0, "HL": 1.0, "LH": -1.0,
-        "FVG_BULLISH": 3.0, "FVG_BEARISH": -3.0, "BULLISH_LS": 3.0, "BEARISH_LS": -3.0,
-        "BULLISH_OB": 1.0, "BEARISH_OB": -1.0, "GNG_Context_Buy": 1.5, "GNG_Context_Sell": -1.5,
-        "ENGULFING_BULL": 1.0, "ENGULFING_BEAR": -1.0, "PINBAR_BULL": 0.8, "PINBAR_BEAR": -0.8,
-        "RBR": 2.0, "DBD": -2.0,
-    }
 
     logging.info(f"[{tf}] --- Analisis Skor Dimulai ---")
     structure_score = 0
@@ -135,7 +134,6 @@ def analyze_tf_opportunity(
         score += fvg_score
         logging.info(f"[{tf}] FVG Terdekat: {nearest_fvg['type']} (Skor: {fvg_score:.2f})")
 
-    # --- PERBAIKAN UNTUK TYPEERROR ---
     ls_score = 0
     if liquidity_sweep: 
         last_sweep = liquidity_sweep[-1] 
@@ -159,14 +157,47 @@ def analyze_tf_opportunity(
         logging.info(f"[{tf}] OB Terdekat: {nearest_ob['type']} (Skor: {ob_score:.2f})")
 
     pattern_score = 0
+    bullish_patterns = []
+    bearish_patterns = []
     for p in patterns:
         p_type = p.get('type')
         if p_type in weights:
-            pattern_score += weights[p_type]
-            logging.info(f"[{tf}] Ditemukan Pola: {p_type} (Skor: {weights[p_type]:.2f})")
+            weight = weights[p_type]
+            pattern_score += weight
+            if weight > 0:
+                bullish_patterns.append(p_type)
+            else:
+                bearish_patterns.append(p_type)
+
+    if pattern_score != 0:
+        bull_summary = ", ".join([f"{count}x {name}" for name, count in Counter(bullish_patterns).items()])
+        bear_summary = ", ".join([f"{count}x {name}" for name, count in Counter(bearish_patterns).items()])
+        summary_parts = []
+        if bull_summary: summary_parts.append(f"Bullish: [{bull_summary}]")
+        if bear_summary: summary_parts.append(f"Bearish: [{bear_summary}]")
+        logging.info(f"[{tf}] Konfluensi Pola Minor: {' | '.join(summary_parts)} (Skor Total: {pattern_score:+.2f})")
+
     score += pattern_score
 
-    logging.info(f"[{tf}] Total Skor Sejauh Ini: {score:.2f}")
+    logging.info(f"[{tf}] Skor Awal: {score:.2f}")
+
+    # --- PENERAPAN HTF BIAS ---
+    direction_pre_bias = "BUY" if score > 0 else "SELL"
+    if htf_config.get('enabled', False) and htf_bias != 'NEUTRAL':
+        bias_score = htf_config.get('bias_influence_score', 2.5)
+        penalty_score = htf_config.get('penalty_score', -5.0)
+
+        if htf_bias == 'BULLISH' and direction_pre_bias == 'BUY':
+            score += bias_score
+            logging.info(f"[{tf}] Bias HTF Bullish mendukung. Menambah skor +{bias_score:.2f}")
+        elif htf_bias == 'BEARISH' and direction_pre_bias == 'SELL':
+            score -= bias_score
+            logging.info(f"[{tf}] Bias HTF Bearish mendukung. Mengurangi skor -{bias_score:.2f}")
+        else: # Sinyal berlawanan dengan bias
+            score += penalty_score
+            logging.warning(f"[{tf}] Sinyal {direction_pre_bias} berlawanan dengan bias HTF {htf_bias}. Skor dipenalti {penalty_score:.2f}")
+
+    logging.info(f"[{tf}] Total Skor Sejauh Ini (setelah HTF): {score:.2f}")
 
     direction = "WAIT"
     order_type = None

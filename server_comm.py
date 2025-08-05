@@ -9,33 +9,36 @@ import logging
 import requests
 from typing import Dict
 
-def send_signal_to_server(symbol: str, signal_json: Dict[str, str], api_key: str, server_url: str, secret_key: str, order_type: str) -> str:
+def send_signal_to_server(**payload: Any) -> str:
     """Mengirim sinyal trading ke server dan mengembalikan status keberhasilan."""
+
+    # Ekstrak URL dan hapus dari payload agar tidak terkirim sebagai JSON
+    server_url = payload.pop("server_url", None)
+    if not server_url:
+        logging.error("server_url tidak ditemukan di payload. Sinyal tidak dikirim.")
+        return 'FAILED'
+
+    signal_json = payload.get("signal_json", {})
     if not isinstance(signal_json, dict):
         logging.error("Tipe data signal_json tidak valid (harus dictionary). Sinyal tidak dikirim.")
         return 'FAILED'
 
-    # Menentukan `signal_type` umum berdasarkan `order_type`
-    signal_type = "WAIT"
-    if "CANCEL" in order_type.upper() or "DELETE" in order_type.upper():
-        signal_type = "CANCEL"
-    elif "BUY" in order_type.upper():
-        signal_type = "BUY"
-    elif "SELL" in order_type.upper():
-        signal_type = "SELL"
+    order_type = payload.get("order_type", "WAIT")
+    symbol = payload.get("symbol", "UNKNOWN")
 
-    payload = {
-        "signal": signal_type,
-        "order_type": order_type,
-        "signal_json": signal_json,
-        "symbol": symbol,
-        "api_key": api_key,
-        "secret_key": secret_key
-    }
+    # Menentukan `signal_type` umum berdasarkan `order_type`
+    if "CANCEL" in order_type.upper() or "DELETE" in order_type.upper():
+        payload['signal'] = "CANCEL"
+    elif "BUY" in order_type.upper():
+        payload['signal'] = "BUY"
+    elif "SELL" in order_type.upper():
+        payload['signal'] = "SELL"
+    else:
+        payload['signal'] = "WAIT"
 
     try:
         response = requests.post(server_url, json=payload, timeout=10)
-        log_message = f"Sinyal {signal_type} untuk {symbol} dikirim."
+        log_message = f"Sinyal {payload.get('signal', 'UNKNOWN')} untuk {symbol} dikirim."
 
         if response.status_code == 200:
             logging.info(f"✅ {log_message} Status: BERHASIL.")

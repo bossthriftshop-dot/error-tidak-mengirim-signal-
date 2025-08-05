@@ -1,26 +1,47 @@
 {
-    "symbols_to_analyze": ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD"],
-    "timeframes_list": ["M1", "M5", "M30", "H4"],
-    "mt5_terminal_path": "C:\\\\Program Files\\\\ExclusiveMarkets MetaTrader5\\\\terminal64.exe",
-    "max_position_per_tf": 10,
-    "api_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
-    "server_url": "http://127.0.0.1:5000/api/internal/submit_signal",
-    "secret_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
-    "min_distance_pips_per_tf": {
-        "M1": 5,
-        "M5": 10,
-        "M30": 20,
-        "H4": 30
-    },
-    "signal_cooldown_minutes": 1,
-    "signal_memory_minutes": 1,
-    "strategy_params": {
-        "confidence_threshold": 2.0,
-        "xgboost_confidence_threshold": 0.75
+    "global_settings": {
+        "symbols_to_analyze": ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD"],
+        "mt5_terminal_path": "C:\\\\Program Files\\\\ExclusiveMarkets MetaTrader5\\\\terminal64.exe",
+        "api_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+        "server_url": "http://127.0.0.1:5000/api/internal/submit_signal",
+        "secret_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+        "main_loop_sleep_seconds": 20
     },
     "logging": {
         "level": "INFO",
         "format": "%(asctime)s - %(levelname)s - %(message)s"
     },
-    "main_loop_sleep_seconds": 20
+    "base_weights": {
+        "BULLISH_BOS": 3.0, "BEARISH_BOS": -3.0, "HH": 1.0, "LL": -1.0, "HL": 1.0, "LH": -1.0,
+        "FVG_BULLISH": 3.0, "FVG_BEARISH": -3.0, "BULLISH_LS": 3.0, "BEARISH_LS": -3.0,
+        "BULLISH_OB": 1.0, "BEARISH_OB": -1.0, "GNG_Context_Buy": 1.5, "GNG_Context_Sell": -1.5,
+        "ENGULFING_BULL": 1.0, "ENGULFING_BEAR": -1.0, "PINBAR_BULL": 0.8, "PINBAR_BEAR": -0.8,
+        "RBR": 2.0, "DBD": -2.0
+    },
+    "strategy_profiles": {
+        "scalping": {
+            "enabled": true,
+            "timeframes": ["M1", "M5"],
+            "max_position_per_tf": 5,
+            "signal_cooldown_minutes": 5,
+            "confidence_threshold": 3.0,
+            "min_distance_pips_per_tf": { "M1": 5, "M5": 10 }
+        },
+        "intraday": {
+            "enabled": true,
+            "timeframes": ["M15", "M30"],
+            "max_position_per_tf": 2,
+            "signal_cooldown_minutes": 30,
+            "confidence_threshold": 4.0,
+            "min_distance_pips_per_tf": { "M15": 20, "M30": 30 }
+        }
+    },
+    "learning": {
+        "enabled": true,
+        "feedback_file": "trade_feedback.json",
+        "lookback_trades_per_profile": 50,
+        "min_trades_for_adaptation": 10,
+        "win_rate_target": 0.60,
+        "weight_adjustment_factor": 0.1
+    }
 }
